@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "B站视频下载器",
+  "version": "1.0.1",
+  "description": "在B站视频页面右下角提供下载入口，支持选择清晰度/编码/格式，自动合并视频与音频为MP4。（Firefox 版）",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "bilibili-video-downloader-firefox@example.com",
+      "strict_min_version": "109.0"
+    }
+  },
+  "permissions": ["storage"],
+  "host_permissions": [
+    "*://api.bilibili.com/*",
+    "*://*.bilibili.com/*",
+    "*://*.bilivideo.com/*",
+    "*://*.bilivideo.cn/*",
+    "*://*.mcdn.bilivideo.cn/*",
+    "*://*.hdslb.com/*",
+    "*://*.akamaized.net/*",
+    "*://*/*"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://www.bilibili.com/*", "*://m.bilibili.com/*"],
+      "js": ["lib/muxer.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "B站视频下载器",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  }
+}
