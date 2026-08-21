@@ -8,6 +8,7 @@
 }
 
 /* 兜底：确保 hidden 属性始终生效（防止 display 样式覆盖，保证关闭按钮可靠） */
+#bdg-root[hidden],
 #bdg-root .bdg-panel[hidden],
 #bdg-root .bdg-progress[hidden],
 #bdg-root .bdg-sec[hidden],

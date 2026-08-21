@@ -4,18 +4,24 @@
 UI、解析逻辑与下载逻辑（`content.js` / `content.css` / `background.js` / `lib/muxer.js`
 均为逐字节相同的副本），仅 manifest 按 Firefox 规范做了适配：
 
+| 差异点 | Chrome 版 | Firefox 版 |
+| --- | --- | --- |
+| 后台声明 | `background.service_worker` | `background.scripts`（事件页） |
+| 浏览器标识 | 无 | `browser_specific_settings.gecko`（含扩展 ID） |
+| 其余（UI/解析/下载/合并器） | — | **完全一致** |
+
+> 如需修改功能，请改 Chrome 版后运行 `sync-firefox.ps1` 一键同步，避免两份代码不一致。
 
 ---
 
 ## 🔧 安装方法
 
-### 方式一：临时加载（推荐）
+### 方式一：临时加载（推荐，最快，无需签名）
 
-1. 从Code → Download ZIP或release页面下载代码，解压
-2. Firefox 地址栏输入 `about:debugging#/runtime/this-firefox` 回车
-3. 点击 **“临时载入附加组件”**（Load Temporary Add-on）
-4. 选择本目录下的 **`manifest.json`**
-5. 完成 ✅ 打开任意 B 站视频页面即可看到右下角下载按钮
+1. Firefox 地址栏输入 `about:debugging#/runtime/this-firefox` 回车
+2. 点击 **“临时载入附加组件”**（Load Temporary Add-on）
+3. 选择本目录下的 **`manifest.json`**
+4. 完成 ✅ 打开任意 B 站视频页面即可看到右下角下载按钮
 
 > ⚠️ 临时加载的扩展在 Firefox **重启后会失效**，需要重新加载。
 > 如需长期使用，请用方式二。
@@ -28,19 +34,19 @@ UI、解析逻辑与下载逻辑（`content.js` / `content.css` / `background.js
 4. 下载签名后的 `.xpi` 文件，拖入 Firefox 即可安装
 
 > 也可以先把 `.gitignore` 里的内容忽略后 `git init` 推送到 GitHub，再从
-> `releases` 下载 zip 签名。
+> `github.com/用户名/仓库/releases` 下载 zip 签名。
 
 ---
 
 ## 📖 使用方法（与 Chrome 版一致）
 
-1. 打开 B 站视频页 / 番剧/影视/纪录片页（`/video/`、`/bangumi/play/`、`/cheese/play/`）
+1. 打开 B 站视频页 / 番剧·影视·纪录片页（`/video/`、`/bangumi/play/`、`/cheese/play/`）
 2. 点击右下角 **“📥 打开B站视频下载”**
 3. 选择分P（如有）、清晰度、编码、下载格式
 4. 点击 **“开始下载”**，完成后自动保存合并好的 `.mp4`
 
 支持：多 P、清晰度（360P~8K）、编码（AVC/HEVC/AV1）、番剧/影视/纪录片、
-深色模式、进度显示、取消、偏好记忆、备用 CDN 自动重试、后台通道绕过跨域限制。
+深色模式、全屏自动隐藏、进度显示、取消、偏好记忆、备用 CDN 自动重试、后台通道绕过跨域限制。
 
 ---
 

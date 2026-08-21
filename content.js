@@ -10,7 +10,8 @@
   if (window.__BDG_INSTALLED__) return;
   window.__BDG_INSTALLED__ = true;
 
-  const IS_VIDEO_PAGE = /^\/(video|bangumi\/play|cheese\/play)\//.test(location.pathname);
+  // 支持的播放页：普通视频 / 番剧影视 / 课程 / 稍后再看·收藏夹·合集等列表播放页(/list/、/medialist/play/)
+  const IS_VIDEO_PAGE = /^\/(video|bangumi\/play|cheese\/play|list|medialist\/play)\//.test(location.pathname);
   if (!IS_VIDEO_PAGE) return;
 
   /* ---------------- 常量 ---------------- */
@@ -80,8 +81,17 @@
 
   /* ---------------- 视频信息 / 播放地址 ---------------- */
   function currentBvid() {
+    // 路径形式：/video/BV... ；列表播放页(稍后再看/收藏夹/合集)的 bvid 在查询参数里
     const m = location.pathname.match(/\/video\/(BV[0-9A-Za-z]+)/);
-    return m ? m[1] : null;
+    if (m) return m[1];
+    const q = new URLSearchParams(location.search).get('bvid');
+    return q && /^BV[0-9A-Za-z]+$/.test(q) ? q : null;
+  }
+
+  // 列表播放页的 oid 查询参数即 aid
+  function currentAid() {
+    const oid = new URLSearchParams(location.search).get('oid');
+    return oid && /^\d+$/.test(oid) ? +oid : null;
   }
 
   // 解析番剧/影视/纪录片播放页 URL：/bangumi/play/ep123 或 /bangumi/play/ss123
@@ -118,10 +128,21 @@
       return { bvid: ep.bvid || null, aid: ep.aid || null, cid: ep.cid, title: pgcTitle(media, ep), pages, epId: ep.id };
     }
 
-    // 3) 普通视频 URL 回退：/video/BV...
+    // 3) 普通视频 URL 回退：/video/BV... 或列表播放页查询参数 bvid
     const bvid = currentBvid();
     if (bvid) {
       const j = await apiGet('https://api.bilibili.com/x/web-interface/view?bvid=' + bvid);
+      if (j.code !== 0) throw new Error('获取视频信息失败：' + (j.message || j.code));
+      const d = j.data;
+      const pages = (d.pages && d.pages.length ? d.pages : [{ cid: d.cid, page: 1, part: d.title, duration: d.duration }])
+        .map((p) => ({ cid: p.cid, page: p.page, part: p.part || ('P' + p.page), duration: p.duration }));
+      return { bvid: d.bvid, aid: d.aid, cid: d.cid, title: d.title || '未知标题', pages };
+    }
+
+    // 3.5) 列表播放页仅有 oid(=aid) 时的回退
+    const aid = currentAid();
+    if (aid) {
+      const j = await apiGet('https://api.bilibili.com/x/web-interface/view?aid=' + aid);
       if (j.code !== 0) throw new Error('获取视频信息失败：' + (j.message || j.code));
       const d = j.data;
       const pages = (d.pages && d.pages.length ? d.pages : [{ cid: d.cid, page: 1, part: d.title, duration: d.duration }])
@@ -733,4 +754,47 @@
       root.classList.toggle('bdg-dark', dark);
     }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
   } catch (e) { /* ignore */ }
+
+  /* ---------------- 全屏时自动隐藏（避免遮挡视频） ----------------
+   * 两类全屏：
+   *  1) Fullscreen API（“系统/浏览器全屏”按钮）：监听 fullscreenchange 事件
+   *  2) B站“网页全屏”（纯 CSS 撑满视口，不触发任何事件）：轮询播放器几何位置检测
+   */
+  const fsState = { system: false, web: false, wasOpen: false, rootHidden: false };
+
+  function applyFsVisibility() {
+    const hide = fsState.system || fsState.web;
+    if (hide && !fsState.rootHidden) {
+      fsState.wasOpen = state.open;   // 记住进入全屏前的面板状态
+      fsState.rootHidden = true;
+      root.hidden = true;             // 隐藏整个 UI（按钮 + 面板）
+    } else if (!hide && fsState.rootHidden) {
+      fsState.rootHidden = false;
+      root.hidden = false;
+      if (!fsState.wasOpen) closePanel();  // 全屏前没开面板则保持关闭
+    }
+  }
+
+  function onFullscreenChange() {
+    fsState.system = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    applyFsVisibility();
+  }
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+  // 检测 B站“网页全屏”：播放器容器铺满整个视口即视为全屏（兼容新旧播放器）
+  function detectWebFullscreen() {
+    try {
+      const list = document.querySelectorAll('.bpx-player-container, .player-container, [class*="fullscreen"], [class*="Fullscreen"]');
+      for (const el of list) {
+        const r = el.getBoundingClientRect();
+        if (r.width >= window.innerWidth - 2 && r.height >= window.innerHeight - 2) return true;
+      }
+    } catch (e) { /* ignore */ }
+    return false;
+  }
+  setInterval(() => {
+    fsState.web = detectWebFullscreen();
+    applyFsVisibility();
+  }, 600);
 })();

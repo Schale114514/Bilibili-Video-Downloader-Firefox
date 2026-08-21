@@ -1,24 +1,30 @@
-# sync-firefox.ps1 — 把 Chrome 版的共享文件同步到 Firefox 版
-# 用法：在 PowerShell 中运行  .\sync-firefox.ps1
-# 作用：从上级目录的 bilibili-downloader（Chrome 版）复制共享文件，
-#       manifest.json 保持 Firefox 版不变。
+# sync-firefox.ps1 — Sync shared files from the Chrome version into this Firefox folder.
+# Usage:  .\sync-firefox.ps1
+# Copies content.js / content.css / background.js / lib / icons from ../bilibili-downloader.
+# manifest.json is NOT touched (keeps Firefox-specific config).
 $ErrorActionPreference = 'Stop'
 
 $chrome = Join-Path $PSScriptRoot '..\bilibili-downloader'
 $firefox = $PSScriptRoot
 
 if (-not (Test-Path (Join-Path $chrome 'manifest.json'))) {
-    Write-Host "未找到 Chrome 版目录：$chrome" -ForegroundColor Red
+    Write-Host "Chrome folder not found: $chrome" -ForegroundColor Red
     exit 1
 }
 
 foreach ($f in @('content.js', 'content.css', 'background.js')) {
     Copy-Item (Join-Path $chrome $f) (Join-Path $firefox $f) -Force
-    Write-Host "已同步 $f"
+    Write-Host "synced $f"
 }
+# 复制目录内容（而不是把目录复制进自身，避免产生 lib/lib、icons/icons 嵌套）
 foreach ($d in @('lib', 'icons')) {
-    Copy-Item (Join-Path $chrome $d) (Join-Path $firefox $d) -Recurse -Force
-    Write-Host "已同步 $d/"
+    $srcDir = Join-Path $chrome $d
+    $dstDir = Join-Path $firefox $d
+    if (-not (Test-Path $dstDir)) {
+        New-Item -ItemType Directory -Path $dstDir | Out-Null
+    }
+    Copy-Item (Join-Path $srcDir '*') $dstDir -Recurse -Force
+    Write-Host "synced $d/"
 }
 
-Write-Host '同步完成（manifest.json 未改动，保持 Firefox 版配置）。' -ForegroundColor Green
+Write-Host 'Done. manifest.json untouched (Firefox-specific config kept).' -ForegroundColor Green
