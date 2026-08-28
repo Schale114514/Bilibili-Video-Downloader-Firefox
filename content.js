@@ -11,7 +11,10 @@
   window.__BDG_INSTALLED__ = true;
 
   // 支持的播放页：普通视频 / 番剧影视 / 课程 / 稍后再看·收藏夹·合集等列表播放页(/list/、/medialist/play/)
-  const IS_VIDEO_PAGE = /^\/(video|bangumi\/play|cheese\/play|list|medialist\/play)\//.test(location.pathname);
+  // 以及活动页(/festival/、/blackboard/)等任意“URL 带 bvid 查询参数”的页面
+  const IS_VIDEO_PAGE =
+    /^\/(video|bangumi\/play|cheese\/play|list|medialist\/play|festival|blackboard)\//.test(location.pathname) ||
+    /^BV[0-9A-Za-z]+$/.test(new URLSearchParams(location.search).get('bvid') || '');
   if (!IS_VIDEO_PAGE) return;
 
   /* ---------------- 常量 ---------------- */

@@ -16,7 +16,7 @@ foreach ($f in @('content.js', 'content.css', 'background.js')) {
     Copy-Item (Join-Path $chrome $f) (Join-Path $firefox $f) -Force
     Write-Host "synced $f"
 }
-# 复制目录内容（而不是把目录复制进自身，避免产生 lib/lib、icons/icons 嵌套）
+# Copy directory CONTENTS into the existing target (avoid lib/lib, icons/icons nesting)
 foreach ($d in @('lib', 'icons')) {
     $srcDir = Join-Path $chrome $d
     $dstDir = Join-Path $firefox $d
