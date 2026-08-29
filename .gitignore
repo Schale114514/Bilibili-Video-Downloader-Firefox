@@ -3,6 +3,9 @@ node_modules/
 npm-debug.log*
 yarn-error.log*
 
+# 测试下载的真实数据（体积大，不入库）
+test/realdata/
+
 # 系统 / 编辑器
 .DS_Store
 Thumbs.db

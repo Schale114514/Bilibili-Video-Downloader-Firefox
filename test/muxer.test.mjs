@@ -98,7 +98,10 @@ function buildSampleEntryAudio() {
   return box('mp4a', b);
 }
 
-function buildFmp4({ isVideo, samples, timescale, duration, firstDtsOffset }) {
+function buildFmp4({ isVideo, samples, timescale, duration, firstDtsOffset, trex }) {
+  // trex 模式：trun 不写每样本时长/标志，由 moov/mvex/trex 的默认值兜底（B站视频流实际结构）
+  const trexMode = !!(trex && trex.duration);
+  const ctoBytes = (s) => Buffer.from((s.cto | 0).toString(16).padStart(8, '0').match(/../g).map(h => parseInt(h, 16)));
   const ftyp = box('ftyp', Buffer.from('isom'), u32(0x200), Buffer.from('isomiso2avc1mp41'));
   const sampleEntry = isVideo ? buildSampleEntryVideo() : buildSampleEntryAudio();
   const stbl = box('stbl',
@@ -124,11 +127,12 @@ function buildFmp4({ isVideo, samples, timescale, duration, firstDtsOffset }) {
     const b = Buffer.concat([full(0, 0), u32(0), u32(0), u32(1000), u32(duration), u32(0x00010000), u16(0x0100), zeros(10), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x40000000), zeros(24), u32(3)]);
     return box('mvhd', b);
   })();
-  const trex = (() => {
-    const b = Buffer.concat([full(0, 0), u32(isVideo ? 1 : 2), u32(1), u32(0), u32(0), u32(0)]);
+  const trexDef = trex || { duration: 0, size: 0, flags: 0 };
+  const trexBox = (() => {
+    const b = Buffer.concat([full(0, 0), u32(isVideo ? 1 : 2), u32(1), u32(trexDef.duration), u32(trexDef.size), u32(trexDef.flags)]);
     return box('trex', b);
   })();
-  const moov = box('moov', Buffer.concat([mvhd, trak, box('mvex', trex)]));
+  const moov = box('moov', Buffer.concat([mvhd, trak, box('mvex', trexBox)]));
 
   // 分片：每片 2~3 个样本，mdat 紧跟在 moof 后
   const frags = [];
@@ -145,12 +149,21 @@ function buildFmp4({ isVideo, samples, timescale, duration, firstDtsOffset }) {
       return box('tfhd', b);
     })();
     const tfdt = (() => { const b = Buffer.concat([full(0, 0), u32(baseDts)]); return box('tfdt', b); })();
-    // trun: data_offset + 每样本 duration/size/flags/cto
-    const trunFlags = 0x000001 | 0x000100 | 0x000200 | 0x000400 | 0x000800;
-    const trunBody = Buffer.concat([
-      full(0, trunFlags), u32(n), u32(92 + n * 16), // data_offset = moof大小(84+16n) + mdat头(8)
-      ...slice.flatMap(s => [u32(s.dur), u32(s.size), u32(s.flags), Buffer.from((s.cto | 0).toString(16).padStart(8, '0').match(/../g).map(h => parseInt(h, 16)))])
-    ]);
+    let trunFlags, trunBody;
+    if (trexMode) {
+      // 真实 B站视频流：trun 只有 data_offset + first_sample_flags + size + cto，时长走 trex 默认
+      trunFlags = 0x000001 | 0x000004 | 0x000200 | 0x000800;
+      trunBody = Buffer.concat([
+        full(0, trunFlags), u32(n), u32(96 + n * 8), u32(0), // first_sample_flags=0 → 首样本同步
+        ...slice.flatMap(s => [u32(s.size), ctoBytes(s)])
+      ]);
+    } else {
+      trunFlags = 0x000001 | 0x000100 | 0x000200 | 0x000400 | 0x000800;
+      trunBody = Buffer.concat([
+        full(0, trunFlags), u32(n), u32(92 + n * 16), // data_offset = moof大小(84+16n) + mdat头(8)
+        ...slice.flatMap(s => [u32(s.dur), u32(s.size), u32(s.flags), ctoBytes(s)])
+      ]);
+    }
     const trun = box('trun', trunBody);
     const traf = box('traf', Buffer.concat([tfhd, tfdt, trun]));
     const moof = box('moof', Buffer.concat([mfhd, traf]));
@@ -207,6 +220,12 @@ section('输出结构校验');
 
   const topBoxes = readBoxes(0, u8.length);
   assert(topBoxes.map(b => b.type).join(',') === 'ftyp,moov,mdat', '顶层应为 ftyp,moov,mdat，实际: ' + topBoxes.map(b => b.type).join(','));
+
+  // ftyp 品牌：应为标准 MP4 品牌，不得携带 dash/msix/dsms 等分片流媒体品牌（Windows 播放器拒播原因）
+  const ftypBrands = [];
+  for (let i = 8; i < Math.min(36, u8.length); i += 4) ftypBrands.push(String.fromCharCode(u8[i], u8[i + 1], u8[i + 2], u8[i + 3]));
+  assert(ftypBrands[0] === 'isom', 'ftyp major_brand 应为 isom，实际 ' + JSON.stringify(ftypBrands[0]));
+  assert(!ftypBrands.some(b => ['dash', 'msix', 'dsms', 'iso5'].includes(b)), 'ftyp 不应含分片流媒体品牌，实际 ' + ftypBrands.join(','));
 
   const moov = find(topBoxes, 'moov');
   const mdat = find(topBoxes, 'mdat');
@@ -387,6 +406,70 @@ section('仅视频（无音频）');
     off += size;
   }
   assert(trakCount === 1, '仅视频应只有 1 个 trak');
+}
+
+section('trex 默认时长（B站视频流真实结构）');
+{
+  const vSamples = makeVideoSamples();
+  // trun 不含时长字段，时长/标志全部来自 moov/mvex/trex 默认值
+  const vFile = buildFmp4({
+    isVideo: true, samples: vSamples, timescale: 90000, duration: 30000,
+    trex: { duration: 640, size: 0, flags: 0x01010000 }
+  });
+  const dbgSrc = src.replace('global.BDGMuxer = api;', 'global.BDGMuxer = api; global.BDGMuxer.__dbg = { parseFmp4: parseFmp4 };');
+  const w2 = {};
+  new Function('window', dbgSrc)(w2);
+  const { parseFmp4 } = w2.BDGMuxer.__dbg;
+  const parsed = parseFmp4(vFile);
+  const s = parsed.tracks[0].samples;
+  assert(s.length === 10, 'trex模式样本数应为 10，实际 ' + s.length);
+  assert(s.every(x => x.duration === 640), '所有样本时长应取自 trex 默认值 640');
+  // 每个分片(moof)的首样本带 first_sample_flags=0 → 关键帧（DASH 分段以关键帧开头），共 4 个分片
+  const syncIdx = [0, 3, 6, 9];
+  assert(s.every((x, i) => x.isSync === syncIdx.includes(i)), '关键帧应为每个分片的首样本(0,3,6,9)，实际 ' + s.map((x, i) => (x.isSync ? i : '')).filter(v => v !== '').join(','));
+  assert(s[0].isSync === true, '首样本(first_sample_flags=0)应为关键帧');
+
+  // 合并输出：stts 总和与 mdhd duration 应为 10×640=6400
+  const out = mergeToMp4(vFile);
+  const outU8 = out;
+  const outDv = new DataView(outU8.buffer, outU8.byteOffset, outU8.byteLength);
+  function walk(start, end, pred) {
+    const found = [];
+    let o = start;
+    while (o + 8 <= end) {
+      const size = outDv.getUint32(o);
+      const t = String.fromCharCode(outU8[o + 4], outU8[o + 5], outU8[o + 6], outU8[o + 7]);
+      if (size < 8 || o + size > end) break;
+      if (pred(t)) found.push({ t, start: o, end: o + size });
+      o += size;
+    }
+    return found;
+  }
+  const moov = walk(0, outU8.length, t => t === 'moov')[0];
+  const traks = walk(moov.start + 8, moov.end, t => t === 'trak');
+  const tKids = walk(traks[0].start + 8, traks[0].end, () => true);
+  const mdia = tKids.find(b => b.t === 'mdia');
+  const mKids = walk(mdia.start + 8, mdia.end, () => true);
+  const mdhd = mKids.find(b => b.t === 'mdhd');
+  const mdhdDur = outDv.getUint32(mdhd.start + 24);
+  const minf = mKids.find(b => b.t === 'minf');
+  const stbl = walk(minf.start + 8, minf.end, t => t === 'stbl')[0];
+  const stblKids = walk(stbl.start + 8, stbl.end, () => true);
+  const stts = stblKids.find(b => b.t === 'stts');
+  const sttsN = outDv.getUint32(stts.start + 12);
+  let sttsSum = 0;
+  for (let i = 0; i < sttsN; i++) sttsSum += outDv.getUint32(stts.start + 16 + i * 8) * outDv.getUint32(stts.start + 20 + i * 8);
+  assert(sttsSum === 6400, `合并输出 stts 总和应为 6400，实际 ${sttsSum}`);
+  assert(mdhdDur === 6400, `合并输出 mdhd duration 应为 6400，实际 ${mdhdDur}`);
+  const stss = stblKids.find(b => b.t === 'stss');
+  if (stss) {
+    const n = outDv.getUint32(stss.start + 12);
+    const nums = [];
+    for (let i = 0; i < n; i++) nums.push(outDv.getUint32(stss.start + 16 + i * 4));
+    assert(n === 4 && nums.join(',') === '1,4,7,10', `关键帧表应为 1,4,7,10，实际 ${nums.join(',')}`);
+  } else {
+    assert(false, '应有 stss 关键帧表');
+  }
 }
 
 section('异常输入');

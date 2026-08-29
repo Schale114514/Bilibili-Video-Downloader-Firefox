@@ -12,7 +12,7 @@ if (-not (Test-Path (Join-Path $chrome 'manifest.json'))) {
     exit 1
 }
 
-foreach ($f in @('content.js', 'content.css', 'background.js')) {
+foreach ($f in @('content.js', 'content.css', 'background.js', 'test/muxer.test.mjs')) {
     Copy-Item (Join-Path $chrome $f) (Join-Path $firefox $f) -Force
     Write-Host "synced $f"
 }

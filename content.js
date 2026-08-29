@@ -424,6 +424,18 @@
         setStatus('✅ 下载完成（无音轨，已保存视频）');
         return;
       }
+      // 大文件合并内存占用约为文件总大小的 3 倍，先询问用户
+      const estTotal = vTotal + aTotal;
+      if (estTotal > 1500 * 1024 * 1024) {
+        const ok = window.confirm('文件较大（' + fmtSize(estTotal) + '），合并时浏览器内存占用可能较高。\n\n确定继续合并为单个 MP4 吗？\n（选择“取消”将改为分别保存视频和音频）');
+        if (!ok) {
+          saveBlob(new Blob([vBuf], { type: 'video/mp4' }), titleBase + '_视频.mp4');
+          saveBlob(new Blob([aBuf], { type: 'audio/mp4' }), titleBase + '_音频.m4a');
+          setStatus('✅ 已分别保存视频与音频');
+          log('已分别保存：' + titleBase + '_视频.mp4 和 _音频.m4a');
+          return;
+        }
+      }
       setStatus('正在合并音视频…');
       setIndeterminate(true);
       let merged = null;
