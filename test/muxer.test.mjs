@@ -276,6 +276,22 @@ section('输出结构校验');
       console.log('  trak' + ti + ' stbl children:', stblBoxes.map(b => b.type + '@' + b.start + ' size=' + (b.end - b.start)).join(' | '));
     }
 
+    // dinf/dref 结构校验：dref 必须是 version+flags=0、entry_count=1，随后紧跟 url 盒。
+    // （曾因漏写 4 字节 version+flags 导致 entry_count 被解析为 url 盒大小 → Media Foundation 拒播，
+    //  而 VLC/mp4box 宽容放行，故必须有此断言）
+    const dinf = find(sChildren, 'dinf');
+    assert(dinf, 'minf 应含 dinf');
+    const dref = readBoxes(dinf.start + 8, dinf.end)[0];
+    assert(dref && dref.type === 'dref', 'dinf 内应含 dref 盒，实际 ' + (dref && dref.type));
+    const drefVF = dv.getUint32(dref.start + 8);
+    const drefCount = dv.getUint32(dref.start + 12);
+    assert(drefVF === 0, 'dref version+flags 必须为 0，实际 ' + drefVF);
+    assert(drefCount === 1, 'dref entry_count 必须为 1，实际 ' + drefCount);
+    const urlBox = readBoxes(dref.start + 16, dref.end)[0];
+    assert(urlBox && urlBox.type === 'url ', 'dref 首个条目应为 url 盒，实际 ' + (urlBox && urlBox.type));
+    assert((dv.getUint32(urlBox.start + 8) & 0xffffff) === 1, 'url 盒 flags 应为 1（数据自包含）');
+    assert(urlBox.end === dref.end, 'dref 内不应有多余字节');
+
     const stsd = findStbl('stsd');
     // stsd: [头8][v/f4][entry_count4] 后是条目盒 [size4][type4] → 类型 at +20
     const entryType = String.fromCharCode(u8[stsd.start + 20], u8[stsd.start + 21], u8[stsd.start + 22], u8[stsd.start + 23]);
