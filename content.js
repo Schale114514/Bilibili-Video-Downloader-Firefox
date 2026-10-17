@@ -234,16 +234,16 @@
     const dash = data && data.dash;
     if (!dash) return [];
     const list = [];
-    if (dash.flac && dash.flac.audio && streamUrl(dash.flac.audio)) {
+    if (dash.flac && dash.flac.audio && streamUrls(dash.flac.audio).length > 0) {
       list.push({ key: 'hires', kind: 'flac', id: 30251, label: 'Hi-Res 无损', stream: dash.flac.audio, note: 'FLAC 无损' });
     }
     const dolbyList = (dash.dolby && Array.isArray(dash.dolby.audio)) ? dash.dolby.audio : [];
     dolbyList.forEach((a, i) => {
-      if (streamUrl(a)) list.push({ key: 'dolby' + i, kind: 'dolby', id: a.id || 30250, label: '杜比全景声' + (dolbyList.length > 1 ? ' #' + (i + 1) : ''), stream: a, note: '杜比' });
+      if (streamUrls(a).length > 0) list.push({ key: 'dolby' + i, kind: 'dolby', id: a.id || 30250, label: '杜比全景声' + (dolbyList.length > 1 ? ' #' + (i + 1) : ''), stream: a, note: '杜比' });
     });
     for (const item of AAC_AUDIO) {
       const s = (dash.audio || []).find((a) => a.id === item.id);
-      if (s && streamUrl(s)) list.push({ key: 'aac' + item.id, kind: 'aac', id: item.id, label: item.label, stream: s, note: 'AAC' });
+      if (s && streamUrls(s).length > 0) list.push({ key: 'aac' + item.id, kind: 'aac', id: item.id, label: item.label, stream: s, note: 'AAC' });
     }
     return list;
   }
