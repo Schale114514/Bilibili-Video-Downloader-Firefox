@@ -25,7 +25,12 @@
   };
   const CODEC_MAP = { 7: 'AVC', 12: 'HEVC', 13: 'AV1' };
   const CODEC_PREF = [7, 12, 13];          // 优先 H.264，其次 HEVC，最后 AV1
-  const AAC_PREF = [30232, 30216, 30280, 30250];
+  // 普通 AAC 音轨（dash.audio[]）：id → 标签，按音质从高到低
+  const AAC_AUDIO = [
+    { id: 30280, label: '192K 高音质' },
+    { id: 30232, label: '132K 标准' },
+    { id: 30216, label: '64K 流畅' }
+  ];
 
   /* ---------------- 状态 ---------------- */
   const state = {
@@ -35,6 +40,8 @@
     qualities: [],        // [{qn,label,needVip,needLogin,codecs:[codecid]}]
     qn: 0,
     codecId: 7,
+    audioKey: 'auto',     // auto / hires / dolbyN / aac30280 ...
+    audioOptions: [],     // [{key,kind,id,label,stream,note}]
     fmt: 'merge',
     busy: false,
     abortCtl: null,
@@ -220,7 +227,28 @@
     return list;
   }
 
-  function pickStreams(data, qn, codecId) {
+  /* ---- 收集所有可用音频流 ----
+   * 注意：杜比全景声与 Hi-Res 无损音轨不在 dash.audio 里，而在 dash.dolby.audio[] 与 dash.flac.audio
+   * （二者仅在大会员登录时由接口返回），必须单独取下，否则永远只能拿到普通 AAC 音轨。 */
+  function collectAudioOptions(data) {
+    const dash = data && data.dash;
+    if (!dash) return [];
+    const list = [];
+    if (dash.flac && dash.flac.audio && streamUrl(dash.flac.audio)) {
+      list.push({ key: 'hires', kind: 'flac', id: 30251, label: 'Hi-Res 无损', stream: dash.flac.audio, note: 'FLAC 无损' });
+    }
+    const dolbyList = (dash.dolby && Array.isArray(dash.dolby.audio)) ? dash.dolby.audio : [];
+    dolbyList.forEach((a, i) => {
+      if (streamUrl(a)) list.push({ key: 'dolby' + i, kind: 'dolby', id: a.id || 30250, label: '杜比全景声' + (dolbyList.length > 1 ? ' #' + (i + 1) : ''), stream: a, note: '杜比' });
+    });
+    for (const item of AAC_AUDIO) {
+      const s = (dash.audio || []).find((a) => a.id === item.id);
+      if (s && streamUrl(s)) list.push({ key: 'aac' + item.id, kind: 'aac', id: item.id, label: item.label, stream: s, note: 'AAC' });
+    }
+    return list;
+  }
+
+  function pickStreams(data, qn, codecId, audioKey) {
     const dash = data.dash;
     if (!dash) {
       const durl = data.durl || [];
@@ -233,10 +261,19 @@
     let video = null;
     for (const c of order) { video = vids.find((v) => v.codecid === c); if (video) break; }
     if (!video) video = vids[0];
-    let audio = null;
-    for (const id of AAC_PREF) { audio = (dash.audio || []).find((a) => a.id === id); if (audio) break; }
-    if (!audio && dash.audio && dash.audio.length) audio = dash.audio[0];
-    return { type: 'dash', video: video, audio: audio };
+    // 音频：auto 时优先最高兼容档 AAC（192K → 132K → 64K），没有 AAC 才退回无损/杜比
+    const audioOpts = collectAudioOptions(data);
+    let picked = null;
+    if (audioKey && audioKey !== 'auto') picked = audioOpts.find((o) => o.key === audioKey) || null;
+    if (!picked) picked = audioOpts.find((o) => o.kind === 'aac') || audioOpts[0] || null;
+    return {
+      type: 'dash',
+      video: video,
+      audio: picked ? picked.stream : null,
+      audioKind: picked ? picked.kind : 'aac',
+      audioLabel: picked ? picked.label : '',
+      audioId: picked ? picked.id : 0
+    };
   }
 
   /* ---------------- 下载流（直连，失败走后台通道） ---------------- */
@@ -341,6 +378,25 @@
     setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 60000);
   }
 
+  /* 保存音频：Hi-Res(FLAC) 音轨还原为真正的 .flac 无损文件，其余（AAC/杜比）保存为 .m4a */
+  function saveAudioFile(aBuf, streams, titleBase, suffix) {
+    const label = streams && streams.audioLabel ? '（' + streams.audioLabel + '）' : '';
+    if (streams && streams.audioKind === 'flac') {
+      try {
+        const flac = window.BDGMuxer && window.BDGMuxer.extractFlac ? window.BDGMuxer.extractFlac(aBuf) : null;
+        if (flac) {
+          saveBlob(new Blob([flac], { type: 'audio/flac' }), titleBase + suffix + '.flac');
+          log('已保存 Hi-Res 无损音轨' + label + '：' + titleBase + suffix + '.flac（真正的 FLAC 无损文件）');
+          return;
+        }
+      } catch (e) {
+        log('FLAC 还原失败（' + (e && e.message ? e.message : e) + '），改为直接保存 .m4a');
+      }
+    }
+    saveBlob(new Blob([aBuf], { type: 'audio/mp4' }), titleBase + suffix + '.m4a');
+    log('已保存音频' + label + '：' + titleBase + suffix + '.m4a');
+  }
+
   /* ---------------- 主下载流程 ---------------- */
   async function runDownload() {
     if (state.busy || !state.info || !state.playurl) return;
@@ -360,7 +416,8 @@
     log('开始下载…');
     try {
       const titleBase = cleanName(info.title) + (info.pages && info.pages.length > 1 ? ' - P' + (curPage.page || 1) : '');
-      const streams = pickStreams(data, qn, codecId);
+      const streams = pickStreams(data, qn, codecId, state.audioKey);
+      if (streams.audioLabel) log('音频音轨：' + streams.audioLabel);
 
       if (streams.type === 'durl') {
         const segs = [];
@@ -399,9 +456,8 @@
       }
 
       if (fmt === 'audio' && aBuf) {
-        saveBlob(new Blob([aBuf], { type: 'audio/mp4' }), titleBase + '.m4a');
+        saveAudioFile(aBuf, streams, titleBase, '');
         setStatus('✅ 下载完成');
-        log('已保存：' + titleBase + '.m4a');
         return;
       }
       if (fmt === 'video' && vBuf) {
@@ -412,7 +468,7 @@
       }
       if (fmt === 'separate') {
         if (vBuf) saveBlob(new Blob([vBuf], { type: 'video/mp4' }), titleBase + '_视频.mp4');
-        if (aBuf) saveBlob(new Blob([aBuf], { type: 'audio/mp4' }), titleBase + '_音频.m4a');
+        if (aBuf) saveAudioFile(aBuf, streams, titleBase, '_音频');
         setStatus('✅ 下载完成（分别保存）');
         log('已保存视频与音频两个文件');
         return;
@@ -430,11 +486,16 @@
         const ok = window.confirm('文件较大（' + fmtSize(estTotal) + '），合并时浏览器内存占用可能较高。\n\n确定继续合并为单个 MP4 吗？\n（选择“取消”将改为分别保存视频和音频）');
         if (!ok) {
           saveBlob(new Blob([vBuf], { type: 'video/mp4' }), titleBase + '_视频.mp4');
-          saveBlob(new Blob([aBuf], { type: 'audio/mp4' }), titleBase + '_音频.m4a');
+          saveAudioFile(aBuf, streams, titleBase, '_音频');
           setStatus('✅ 已分别保存视频与音频');
-          log('已分别保存：' + titleBase + '_视频.mp4 和 _音频.m4a');
+          log('已分别保存：' + titleBase + '_视频.mp4 和音频文件');
           return;
         }
+      }
+      if (streams.audioKind === 'flac') {
+        log('提示：Hi-Res 无损（FLAC）合并进 MP4 后，Windows 自带播放器可能无法解码，建议用 VLC 等播放器；若要原始无损文件请选「仅音频」。');
+      } else if (streams.audioKind === 'dolby') {
+        log('提示：杜比全景声（ec-3）合并进 MP4 后，Windows 自带播放器可能无法解码，建议用 VLC 等播放器。');
       }
       setStatus('正在合并音视频…');
       setIndeterminate(true);
@@ -453,7 +514,7 @@
         log('已保存合并后的 MP4：' + titleBase + '.mp4');
       } else {
         saveBlob(new Blob([vBuf], { type: 'video/mp4' }), titleBase + '_视频.mp4');
-        saveBlob(new Blob([aBuf], { type: 'audio/mp4' }), titleBase + '_音频.m4a');
+        saveAudioFile(aBuf, streams, titleBase, '_音频');
         setStatus('✅ 下载完成（分别保存）');
       }
     } catch (e) {
@@ -502,6 +563,9 @@
     '      <div class="bdg-sec-title">清晰度</div><div id="bdgQualities" class="bdg-ql"></div></div>' +
     '    <div id="bdgCodecSec" class="bdg-sec" hidden>' +
     '      <div class="bdg-sec-title">编码</div><div id="bdgCodecs" class="bdg-codec"></div></div>' +
+    '    <div id="bdgAudioSec" class="bdg-sec" hidden>' +
+    '      <div class="bdg-sec-title">音频质量</div><div id="bdgAudios" class="bdg-ql"></div>' +
+    '      <div id="bdgAudioTip" class="bdg-audiotip" hidden></div></div>' +
     '    <div class="bdg-sec">' +
     '      <div class="bdg-sec-title">下载格式</div><div id="bdgFormats" class="bdg-fmt"></div></div>' +
     '    <div class="bdg-actions">' +
@@ -647,6 +711,54 @@
       box.appendChild(row);
     });
     renderCodecs();
+    renderAudios();
+  }
+
+  /* 音频质量选择：自动 / Hi-Res 无损 / 杜比全景声 / 192K / 132K / 64K */
+  function renderAudios() {
+    const sec = el('bdgAudioSec');
+    const box = el('bdgAudios');
+    const tip = el('bdgAudioTip');
+    const opts = collectAudioOptions(state.playurl || {});
+    state.audioOptions = opts;
+    if (!opts.length) {
+      sec.hidden = true;
+      tip.hidden = true;
+      return;
+    }
+    sec.hidden = false;
+    const rows = [{ key: 'auto', label: '自动（最佳兼容）', note: '优先 192K AAC' }].concat(opts.map((o) => ({ key: o.key, label: o.label, note: o.note })));
+    if (!rows.some((r) => r.key === state.audioKey)) state.audioKey = 'auto';
+    const chosen = opts.find((o) => o.key === state.audioKey);
+    box.innerHTML = '';
+    rows.forEach((r) => {
+      const row = document.createElement('div');
+      row.className = 'bdg-ql-item' + (r.key === state.audioKey ? ' bdg-ql-sel' : '');
+      row.dataset.key = r.key;
+      const vipBadge = (r.key !== 'auto' && (r.key === 'hires' || r.key.indexOf('dolby') === 0)) ? '<span class="bdg-ql-badge bdg-badge-vip">会员</span>' : '';
+      row.innerHTML = '<span class="bdg-ql-name">' + esc(r.label) + '</span>' +
+        (r.note ? '<span class="bdg-ql-codecs">' + esc(r.note) + '</span>' : '') + vipBadge;
+      row.addEventListener('click', () => {
+        state.audioKey = r.key;
+        box.querySelectorAll('.bdg-ql-item').forEach((x) => x.classList.toggle('bdg-ql-sel', x.dataset.key === r.key));
+        updateAudioTip();
+        savePrefs();
+      });
+      box.appendChild(row);
+    });
+    updateAudioTip();
+    function updateAudioTip() {
+      const o = opts.find((x) => x.key === state.audioKey);
+      if (o && o.kind !== 'aac') {
+        tip.hidden = false;
+        tip.textContent = o.kind === 'flac'
+          ? 'Hi-Res 为 FLAC 无损音轨：选「仅音频」会保存为真正的 .flac；若合并进 MP4，Windows 自带播放器可能不支持（建议用 VLC 播放）。'
+          : '杜比全景声为 ec-3 编码：合并进 MP4 后 Windows 自带播放器可能不支持（建议用 VLC 播放）。';
+      } else {
+        tip.hidden = true;
+        tip.textContent = '';
+      }
+    }
   }
 
   function renderCodecs() {
@@ -705,16 +817,17 @@
   /* ---------------- 偏好记忆 ---------------- */
   function savePrefs() {
     try {
-      chrome.storage.local.set({ bdgQn: state.qn, bdgCodec: state.codecId, bdgFmt: state.fmt });
+      chrome.storage.local.set({ bdgQn: state.qn, bdgCodec: state.codecId, bdgFmt: state.fmt, bdgAudio: state.audioKey });
     } catch (e) { /* ignore */ }
   }
   function restorePrefs() {
     try {
-      chrome.storage.local.get(['bdgQn', 'bdgCodec', 'bdgFmt'], (r) => {
+      chrome.storage.local.get(['bdgQn', 'bdgCodec', 'bdgFmt', 'bdgAudio'], (r) => {
         if (!r) return;
         if (r.bdgQn && state.qualities.some((q) => q.qn === r.bdgQn)) state.qn = r.bdgQn;
         if (r.bdgCodec) state.codecId = r.bdgCodec;
         if (r.bdgFmt) state.fmt = r.bdgFmt;
+        if (r.bdgAudio) state.audioKey = r.bdgAudio;
         renderQualities();
         renderFormats();
       });

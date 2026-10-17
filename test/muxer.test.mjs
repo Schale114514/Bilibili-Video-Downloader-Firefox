@@ -13,7 +13,7 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'muxer.js'), 'utf8
 const testWindow = {};
 const fn = new Function('window', src);
 fn(testWindow);
-const { mergeToMp4, isFragmented } = testWindow.BDGMuxer;
+const { mergeToMp4, isFragmented, extractFlac } = testWindow.BDGMuxer;
 
 let passed = 0;
 let failed = 0;
@@ -98,12 +98,30 @@ function buildSampleEntryAudio() {
   return box('mp4a', b);
 }
 
-function buildFmp4({ isVideo, samples, timescale, duration, firstDtsOffset, trex }) {
+// B 站 Hi-Res 无损音轨：样本条目为 fLaC，内部 dfLa 盒携带 FLAC 元数据块（STREAMINFO）
+function buildSampleEntryFlac() {
+  const streamInfo = Buffer.alloc(34).fill(0x5a); // 34 字节 STREAMINFO（内容无需真实）
+  // FLAC 元数据块头：1 字节(last|type) + 3 字节长度；type=0 为 STREAMINFO
+  const metaBlock = Buffer.concat([u8arr(0x80, 0x00, 0x00, 0x22), streamInfo]);
+  const dfLa = box('dfLa', Buffer.concat([full(0, 0), metaBlock]));
+  const b = Buffer.concat([
+    zeros(6), u16(1),        // reserved(6) + data_reference_index(2)
+    u32(0), u32(0),          // reserved[2]
+    u16(2),                  // channelcount
+    u16(24),                 // samplesize
+    u16(0), u16(0),          // pre_defined + reserved
+    u32(192000 << 16),       // samplerate 16.16
+    dfLa
+  ]);
+  return box('fLaC', b);
+}
+
+function buildFmp4({ isVideo, samples, timescale, duration, firstDtsOffset, trex, entryType }) {
   // trex 模式：trun 不写每样本时长/标志，由 moov/mvex/trex 的默认值兜底（B站视频流实际结构）
   const trexMode = !!(trex && trex.duration);
   const ctoBytes = (s) => Buffer.from((s.cto | 0).toString(16).padStart(8, '0').match(/../g).map(h => parseInt(h, 16)));
   const ftyp = box('ftyp', Buffer.from('isom'), u32(0x200), Buffer.from('isomiso2avc1mp41'));
-  const sampleEntry = isVideo ? buildSampleEntryVideo() : buildSampleEntryAudio();
+  const sampleEntry = isVideo ? buildSampleEntryVideo() : (entryType === 'flac' ? buildSampleEntryFlac() : buildSampleEntryAudio());
   const stbl = box('stbl',
     (() => { const b = Buffer.concat([full(0, 0), u32(1), sampleEntry]); return box('stsd', b); })(),
     (() => { const b = Buffer.concat([full(0, 0), u32(0)]); return box('stts', b); })(),
@@ -486,6 +504,33 @@ section('trex 默认时长（B站视频流真实结构）');
   } else {
     assert(false, '应有 stss 关键帧表');
   }
+}
+
+section('Hi-Res FLAC 音轨还原（extractFlac）');
+{
+  const frames = makeAudioSamples();   // 当作 FLAC 帧数据
+  const flacFile = buildFmp4({ isVideo: false, samples: frames, timescale: 48000, duration: 14336, entryType: 'flac' });
+  const out = extractFlac(flacFile);
+  assert(out instanceof Uint8Array && out.length > 0, 'extractFlac 应返回数据');
+  assert(out[0] === 0x66 && out[1] === 0x4c && out[2] === 0x61 && out[3] === 0x43, "应以 'fLaC' 魔数开头");
+  assert(out[4] === 0x80, '首个元数据块应为 STREAMINFO 且 last 标志置位，实际 0x' + out[4].toString(16));
+  const blockLen = (out[5] << 16) | (out[6] << 8) | out[7];
+  assert(blockLen === 34, 'STREAMINFO 长度应为 34，实际 ' + blockLen);
+  const dataStart = 4 + 4 + 34;
+  const totalFrameBytes = frames.reduce((a, s) => a + s.size, 0);
+  assert(out.length === dataStart + totalFrameBytes, `总长应为 fLaC(4)+元数据块(38)+帧数据(${totalFrameBytes})，实际 ${out.length}`);
+  let ok = true;
+  let o = dataStart;
+  for (const s of frames) {
+    for (let j = 0; j < s.size; j++) { if (out[o + j] !== s.data[j]) { ok = false; break; } }
+    o += s.size;
+  }
+  assert(ok, '所有 FLAC 帧数据应完整保留');
+  // 非 FLAC 音轨应返回 null
+  const mp4aFile = buildFmp4({ isVideo: false, samples: makeAudioSamples(), timescale: 48000, duration: 14336 });
+  assert(extractFlac(mp4aFile) === null, 'AAC(mp4a) 音轨应返回 null');
+  const movFile = buildFmp4({ isVideo: true, samples: makeVideoSamples(), timescale: 90000, duration: 30000 });
+  assert(extractFlac(movFile) === null, '视频流应返回 null');
 }
 
 section('异常输入');

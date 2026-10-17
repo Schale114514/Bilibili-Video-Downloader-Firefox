@@ -251,6 +251,19 @@
   height: 16px;
 }
 
+/* 音频质量提示（Hi-Res / 杜比 兼容性说明） */
+.bdg-audiotip {
+  margin-top: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #8a5a00;
+  background: #fff7e6;
+  border: 1px solid #ffe0a3;
+  border-radius: 0;
+  word-break: break-all;
+}
+
 /* 按钮 */
 .bdg-actions {
   display: flex;
@@ -342,6 +355,11 @@
 .bdg-dark .bdg-panel {
   background: #1f2329;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+.bdg-dark .bdg-audiotip {
+  color: #d9b25e;
+  background: #2e2a1c;
+  border-color: #4a4023;
 }
 .bdg-dark .bdg-vtitle {
   color: #f1f2f3;
